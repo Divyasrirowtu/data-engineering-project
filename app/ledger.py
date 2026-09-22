@@ -1,8 +1,29 @@
 from decimal import Decimal
 
+from psycopg2 import OperationalError
+
 from app.db import get_connection
+from app.errors import (
+    AccountNotFoundError,
+    DatabaseOperationError,
+    InsufficientBalanceError,
+    InvalidAmountError,
+    SameAccountError,
+)
+from app.retry import database_retry
 
 
+@database_retry
+def check_database_connection():
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1;")
+            return cursor.fetchone()[0] == 1
+
+    finally:
+        connection.close()
 def create_account(account_name, balance=Decimal("0.00")):
     connection = get_connection()
 
@@ -18,9 +39,12 @@ def create_account(account_name, balance=Decimal("0.00")):
                     (account_name, balance),
                 )
 
-                account_id = cursor.fetchone()[0]
+                return cursor.fetchone()[0]
 
-        return account_id
+    except Exception as exc:
+        raise DatabaseOperationError(
+            f"Unable to create account: {exc}"
+        ) from exc
 
     finally:
         connection.close()
@@ -43,22 +67,41 @@ def get_account_balance(account_id):
             result = cursor.fetchone()
 
             if result is None:
-                raise ValueError("Account not found")
+                raise AccountNotFoundError(
+                    f"Account {account_id} was not found"
+                )
 
             return result[0]
+
+    except AccountNotFoundError:
+        raise
+
+    except Exception as exc:
+        raise DatabaseOperationError(
+            f"Unable to retrieve account balance: {exc}"
+        ) from exc
 
     finally:
         connection.close()
 
 
 def transfer_money(from_account_id, to_account_id, amount):
-    amount = Decimal(str(amount))
+    try:
+        amount = Decimal(str(amount))
+    except Exception as exc:
+        raise InvalidAmountError(
+            "Transaction amount must be numeric"
+        ) from exc
 
     if amount <= 0:
-        raise ValueError("Transfer amount must be greater than zero")
+        raise InvalidAmountError(
+            "Transaction amount must be greater than zero"
+        )
 
     if from_account_id == to_account_id:
-        raise ValueError("Source and destination accounts must be different")
+        raise SameAccountError(
+            "Source and destination accounts must be different"
+        )
 
     connection = get_connection()
 
@@ -79,7 +122,9 @@ def transfer_money(from_account_id, to_account_id, amount):
                 accounts = cursor.fetchall()
 
                 if len(accounts) != 2:
-                    raise ValueError("One or both accounts do not exist")
+                    raise AccountNotFoundError(
+                        "One or both accounts do not exist"
+                    )
 
                 balances = {
                     account_id: balance
@@ -87,7 +132,9 @@ def transfer_money(from_account_id, to_account_id, amount):
                 }
 
                 if balances[from_account_id] < amount:
-                    raise ValueError("Insufficient account balance")
+                    raise InsufficientBalanceError(
+                        "Insufficient account balance"
+                    )
 
                 cursor.execute(
                     """
@@ -127,9 +174,20 @@ def transfer_money(from_account_id, to_account_id, amount):
                     ),
                 )
 
-                transaction_id = cursor.fetchone()[0]
+                return cursor.fetchone()[0]
 
-        return transaction_id
+    except (
+        AccountNotFoundError,
+        InsufficientBalanceError,
+        InvalidAmountError,
+        SameAccountError,
+    ):
+        raise
+
+    except Exception as exc:
+        raise DatabaseOperationError(
+            f"Ledger transaction failed: {exc}"
+        ) from exc
 
     finally:
         connection.close()

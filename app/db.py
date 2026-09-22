@@ -2,10 +2,10 @@ import psycopg2
 
 from config.settings import (
     POSTGRES_DB,
-    POSTGRES_USER,
-    POSTGRES_PASSWORD,
     POSTGRES_HOST,
+    POSTGRES_PASSWORD,
     POSTGRES_PORT,
+    POSTGRES_USER,
 )
 
 
